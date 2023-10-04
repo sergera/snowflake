@@ -117,18 +117,22 @@ impl Snowflake {
     }
 
     pub fn gen(&mut self) -> i64 {
-        let mut millis = self.get_time_millis();
-        if self.seq == 0 && millis == self.last_millis {
-            // if the sequence looped in the same millisecond, wait for the beginning of the next millisecond
-            let elapsed_micros = 1_000
-                - SystemTime::now()
-                    .duration_since(self.epoch)
-                    .unwrap()
-                    .as_micros()
-                    % 1_000;
-            sleep(Duration::from_micros(1_000 - elapsed_micros as u64));
-            millis = self.get_time_millis();
-        };
+        let (current_time, mut millis) = self.get_time();
+
+        if millis > self.last_millis {
+            // new millisecond, reset sequence
+            self.seq = 0;
+        } else if self.seq == MAX_17_BITS {
+            // sequence was exhausted in the same millisecond, wait until next millisecond
+            let elapsed_micros = current_time
+                .duration_since(self.epoch)
+                .unwrap()
+                .subsec_micros();
+            let sleep_duration = Duration::from_micros((1_000 - elapsed_micros) as u64);
+            sleep(sleep_duration);
+            millis += 1;
+        }
+
         self.last_millis = millis;
         millis << 19 | ((self.next_seq()) << 2) as i64 | self.service_id as i64
     }
@@ -138,11 +142,10 @@ impl Snowflake {
         self.seq
     }
 
-    fn get_time_millis(&self) -> i64 {
-        SystemTime::now()
-            .duration_since(self.epoch)
-            .unwrap()
-            .as_millis() as i64
+    fn get_time(&self) -> (SystemTime, i64) {
+        let current_time = SystemTime::now();
+        let millis = current_time.duration_since(self.epoch).unwrap().as_millis() as i64;
+        (current_time, millis)
     }
 }
 
