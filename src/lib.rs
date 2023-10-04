@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -30,6 +31,65 @@ i.e. over 524 million unique ids per second using 4 services
 
 const MAX_17_BITS: u32 = 131071;
 const MAX_2_BITS: u16 = 3;
+
+pub struct ConcurrentSnowflake {
+    inner: Arc<Mutex<Snowflake>>,
+}
+
+impl ConcurrentSnowflake {
+    pub fn new(service_id: u16) -> Result<Self, SnowflakeError> {
+        Ok(Self {
+            inner: Arc::new(Mutex::new(Snowflake::with_epoch(service_id, UNIX_EPOCH)?)),
+        })
+    }
+
+    pub fn with_epoch(service_id: u16, epoch: SystemTime) -> Result<Self, SnowflakeError> {
+        Ok(Self {
+            inner: Arc::new(Mutex::new(Snowflake::with_epoch(service_id, epoch)?)),
+        })
+    }
+
+    pub fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    pub fn gen(&mut self) -> Result<i64, ConcurrentSnowflakeError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| ConcurrentSnowflakeError::PoisonError)?
+            .gen())
+    }
+}
+
+#[derive(Debug)]
+pub enum ConcurrentSnowflakeError {
+    PoisonError,
+    SnowflakeError(SnowflakeError),
+}
+
+impl std::fmt::Display for ConcurrentSnowflakeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::PoisonError => write!(
+                f,
+                "lock was poisoned during a previous access and can no longer be locked"
+            ),
+            Self::SnowflakeError(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ConcurrentSnowflakeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SnowflakeError(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Snowflake {
@@ -112,5 +172,59 @@ mod tests {
         ids.dedup();
         ids = ids.into_iter().filter(|id| *id > 0).collect();
         assert_eq!(ids.len(), NUM_IDS as usize);
+    }
+
+    #[test]
+    fn test_snowflake_concurrently_creates_unique_positive_ids() {
+        use std::thread::spawn;
+
+        let snowflake = ConcurrentSnowflake::new(0).unwrap();
+
+        let mut clone1 = snowflake.clone();
+        let ids_thread_one = spawn(move || {
+            let mut ids: Vec<i64> = Vec::new();
+            for _ in 0..NUM_IDS {
+                ids.push(clone1.gen().unwrap());
+            }
+            ids
+        });
+
+        let mut clone2 = snowflake.clone();
+        let ids_thread_two = spawn(move || {
+            let mut ids: Vec<i64> = Vec::new();
+            for _ in 0..NUM_IDS {
+                ids.push(clone2.gen().unwrap());
+            }
+            ids
+        });
+
+        let mut clone3 = snowflake.clone();
+        let ids_thread_three = spawn(move || {
+            let mut ids: Vec<i64> = Vec::new();
+            for _ in 0..NUM_IDS {
+                ids.push(clone3.gen().unwrap());
+            }
+            ids
+        });
+
+        let mut clone4 = snowflake.clone();
+        let ids_thread_four = spawn(move || {
+            let mut ids: Vec<i64> = Vec::new();
+            for _ in 0..NUM_IDS {
+                ids.push(clone4.gen().unwrap());
+            }
+            ids
+        });
+
+        let mut ids: Vec<i64> = Vec::new();
+        ids.extend(ids_thread_one.join().unwrap());
+        ids.extend(ids_thread_two.join().unwrap());
+        ids.extend(ids_thread_three.join().unwrap());
+        ids.extend(ids_thread_four.join().unwrap());
+
+        ids.sort();
+        ids.dedup();
+        ids = ids.into_iter().filter(|id| *id > 0).collect();
+        assert_eq!(ids.len(), (NUM_IDS * 4) as usize);
     }
 }
