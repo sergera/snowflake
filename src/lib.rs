@@ -119,8 +119,14 @@ impl Snowflake {
     pub fn gen(&mut self) -> i64 {
         let mut millis = self.get_time_millis();
         if self.seq == 0 && millis == self.last_millis {
-            // if the sequence looped in the same millisecond, wait a millisecond
-            sleep(Duration::from_millis(1));
+            // if the sequence looped in the same millisecond, wait for the beginning of the next millisecond
+            let elapsed_micros = 1_000
+                - SystemTime::now()
+                    .duration_since(self.epoch)
+                    .unwrap()
+                    .as_micros()
+                    % 1_000;
+            sleep(Duration::from_micros(1_000 - elapsed_micros as u64));
             millis = self.get_time_millis();
         };
         self.last_millis = millis;
